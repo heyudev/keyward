@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+
+# A vault must never be committed, even though it is encrypted: the file is
+# only as safe as the master password, and history is forever.
+vault.json
+vault.json.bak
+vault.json.tmp
+*.bak
+*.tmp

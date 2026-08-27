@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keyward</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128274;</text></svg>">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+
+<!-- ============================ Lock screen ============================ -->
+<section id="lock-screen" class="lock-screen">
+  <form id="unlock-form" class="lock-card" autocomplete="off">
+    <div class="lock-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/>
+        <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+        <circle cx="12" cy="15.5" r="1.3" fill="currentColor" stroke="none"/>
+      </svg>
+    </div>
+
+    <h1 class="lock-title">Keyward</h1>
+    <p id="lock-subtitle" class="lock-subtitle">Enter your master password to unlock.</p>
+
+    <label class="field">
+      <span class="field-label">Master password</span>
+      <input id="master-password" class="input" type="password" autocomplete="current-password" required
+             spellcheck="false" autocapitalize="off">
+    </label>
+
+    <label class="field" id="confirm-field" hidden>
+      <span class="field-label">Confirm master password</span>
+      <input id="master-password-confirm" class="input" type="password" autocomplete="new-password"
+             spellcheck="false" autocapitalize="off">
+    </label>
+
+    <div id="lock-strength" class="strength" hidden>
+      <div class="strength-track"><div id="lock-strength-bar" class="strength-bar"></div></div>
+      <span id="lock-strength-label" class="strength-label"></span>
+    </div>
+
+    <p id="lock-error" class="lock-error" role="alert" hidden></p>
+
+    <button id="unlock-button" class="button button-primary button-block" type="submit">Unlock</button>
+
+    <p class="lock-note">
+      Your master password never leaves this device and is never stored.
+      Lose it and the vault cannot be recovered.
+    </p>
+  </form>
+</section>
+
+<!-- ============================== Main app ============================== -->
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/>
+        <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+      </svg>
+      <span>Keyward</span>
+    </div>
+
+    <div class="topbar-search">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>
+      </svg>
+      <input id="search" class="input search-input" type="search" placeholder="Search vault"
+             aria-label="Search vault" spellcheck="false" autocomplete="off">
+      <kbd class="search-hint">/</kbd>
+    </div>
+
+    <div class="topbar-actions">
+      <span id="save-state" class="save-state" aria-live="polite"></span>
+      <button id="generator-button" class="button button-ghost" type="button" title="Password generator">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 12h4l3-7 4 14 3-7h2"/>
+        </svg>
+        Generate
+      </button>
+      <button id="lock-button" class="button button-ghost" type="button" title="Lock vault (Ctrl+L)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8.5 11V7.5a3.5 3.5 0 0 1 7 0V11"/>
+        </svg>
+        Lock
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span id="item-count" class="sidebar-count"></span>
+        <button id="new-item-button" class="button button-primary button-small" type="button">+ New item</button>
+      </div>
+      <ul id="item-list" class="item-list"></ul>
+    </aside>
+
+    <main id="detail" class="detail"></main>
+  </div>
+</div>
+
+<!-- =========================== Generator panel =========================== -->
+<div id="generator-overlay" class="overlay" hidden>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="generator-title">
+    <header class="sheet-head">
+      <h2 id="generator-title">Password generator</h2>
+      <button id="generator-close" class="icon-button" type="button" aria-label="Close">&times;</button>
+    </header>
+
+    <output id="generated" class="generated" for="generator-form"></output>
+
+    <div class="strength">
+      <div class="strength-track"><div id="generated-strength-bar" class="strength-bar"></div></div>
+      <span id="generated-strength-label" class="strength-label"></span>
+    </div>
+
+    <div class="sheet-actions">
+      <button id="regenerate" class="button button-ghost" type="button">Regenerate</button>
+      <button id="copy-generated" class="button button-primary" type="button">Copy</button>
+    </div>
+
+    <form id="generator-form" class="generator-form">
+      <div class="segmented" role="tablist">
+        <button class="segment is-active" type="button" data-mode="password" role="tab">Random</button>
+        <button class="segment" type="button" data-mode="passphrase" role="tab">Memorable</button>
+      </div>
+
+      <div id="password-options">
+        <label class="field-row">
+          <span>Length</span>
+          <input id="opt-length" class="slider" type="range" min="8" max="64" value="20">
+          <output id="opt-length-value" class="field-value">20</output>
+        </label>
+        <div class="toggle-grid">
+          <label class="toggle"><input id="opt-lowercase" type="checkbox" checked><span>a-z</span></label>
+          <label class="toggle"><input id="opt-uppercase" type="checkbox" checked><span>A-Z</span></label>
+          <label class="toggle"><input id="opt-digits" type="checkbox" checked><span>0-9</span></label>
+          <label class="toggle"><input id="opt-symbols" type="checkbox" checked><span>!@#</span></label>
+          <label class="toggle toggle-wide"><input id="opt-ambiguous" type="checkbox"><span>Avoid look-alikes</span></label>
+        </div>
+      </div>
+
+      <div id="passphrase-options" hidden>
+        <label class="field-row">
+          <span>Words</span>
+          <input id="opt-words" class="slider" type="range" min="3" max="10" value="4">
+          <output id="opt-words-value" class="field-value">4</output>
+        </label>
+        <div class="toggle-grid toggle-grid-pair">
+          <label class="toggle"><input id="opt-capitalize" type="checkbox" checked><span>Capitalise</span></label>
+          <label class="toggle"><input id="opt-number" type="checkbox" checked><span>Add number</span></label>
+        </div>
+      </div>
+    </form>
+  </section>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+</body>
+</html>

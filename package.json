@@ -1,0 +1,14 @@
+{
+  "name": "keyward",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A minimal 1Password-style password manager: client-side encrypted vault, zero-knowledge local server.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server/server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
