@@ -9,3 +9,4 @@ vault.json.tmp
 *.bak
 *.tmp
 .keyward-*/
+dist/

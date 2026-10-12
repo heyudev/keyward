@@ -9,6 +9,9 @@
   },
   "scripts": {
     "start": "node src/server/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check": "node scripts/check.js",
+    "build:extension": "node scripts/build-extension.js",
+    "pack:extension": "node scripts/package-extension.js"
   }
 }

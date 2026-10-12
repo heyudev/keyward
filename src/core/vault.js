@@ -148,9 +148,9 @@ function envelopeAad(header) {
  * An unlocked session: the derived key plus the KDF parameters needed to write
  * the envelope header back out.
  *
- * The key is non-extractable and the master password is never stored, so an
- * unlocked client holds no material that can be read back out of memory by
- * script. Locking is therefore just dropping this object.
+ * The key is non-extractable and the master password is never stored. An
+ * unlocked client still holds plaintext and can decrypt with this key, so
+ * locking must discard both the session and the decrypted vault.
  */
 export async function createSession(masterPassword, { iterations = DEFAULT_ITERATIONS } = {}) {
   const salt = randomBytes(SALT_BYTES);

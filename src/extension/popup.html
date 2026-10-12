@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keyward</title>
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
+</head>
+<body>
+  <header>
+    <div><h1>Keyward</h1><p id="site" class="muted"></p></div>
+    <button id="lock" type="button" data-i18n="lock" hidden>Lock</button>
+  </header>
+  <p id="error" role="alert" hidden></p>
+  <p id="status" role="status" aria-live="polite" hidden></p>
+  <form id="unlock-form">
+    <label for="master" data-i18n="masterPassword">Master password</label>
+    <input id="master" type="password" autocomplete="current-password" required spellcheck="false" autocapitalize="off">
+    <button id="unlock" class="primary" type="submit" data-i18n="unlock">Unlock</button>
+  </form>
+  <section id="accounts" hidden>
+    <h2 data-i18n="matchingAccounts">Matching accounts</h2>
+    <p id="empty" class="muted" data-i18n="noMatches" hidden>No accounts match this website.</p>
+    <ul id="items"></ul>
+    <section class="generator">
+      <h2 data-i18n="generator">Password generator</h2>
+      <label for="length" data-i18n="length">Length</label>
+      <input id="length" type="number" min="8" max="128" value="20" required>
+      <output id="generated"></output>
+      <p id="strength" class="muted"></p>
+      <div class="actions">
+        <button id="generate" type="button" data-i18n="generate">Generate</button>
+        <button id="copy" type="button" data-i18n="copy" disabled>Copy</button>
+      </div>
+      <p class="muted note" data-i18n="clipboardNotice">Clipboard copies are not automatically cleared.</p>
+    </section>
+  </section>
+  <footer>
+    <button id="manage" type="button" data-i18n="manage">Manage vault</button>
+    <details>
+      <summary data-i18n="connection">Local connection</summary>
+      <label for="port" data-i18n="port">Service port</label>
+      <input id="port" type="number" min="1" max="65535" value="8787" required>
+      <p class="muted note" data-i18n="localNotice">Start Keyward on this computer. Only 127.0.0.1 is supported.</p>
+    </details>
+    <p class="muted note" data-i18n="sessionNotice">Closing this popup locks the vault. Fill only websites you trust.</p>
+  </footer>
+</body>
+</html>

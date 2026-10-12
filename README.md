@@ -37,6 +37,15 @@ cd keyward && npm test
 - **Password reuse warnings:** the list and detail view flag passwords shared by multiple items.
 - **Clipboard:** copy a username or password with one click. Keyward attempts to clear the clipboard after 20 seconds.
 - **Save protection:** item changes are committed only after a successful save. A failed save leaves the editing form available for retry. Stale tabs cannot overwrite changes saved by another tab.
+- **Chrome extension:** unlock a popup, select an account matching the current website, and click to fill it. Includes a generator and English/Simplified Chinese UI. Requires the local service; available as a development build, pending real-browser verification and store publication.
+
+## Chrome extension
+
+```bash
+npm run build:extension
+```
+
+Load `dist/chrome` through **Load unpacked** at `chrome://extensions`. Keep `npm start` running. Chrome 106 or later is required; closing the popup locks its vault. See the [installation and packaging guide](docs/chrome-extension.md) and [privacy policy](PRIVACY.md).
 
 ## Security model
 
@@ -76,6 +85,8 @@ src/core/         Shared encryption and data logic for the browser and Node
   persistence.js  Save confirmation, mutation ordering, and locking during saves
 src/server/       Local HTTP server: static assets and encrypted vault storage
 src/web/          Browser interface
+src/extension/    Manifest V3 popup and user-triggered login filling
+scripts/          Syntax checks and dependency-free extension packaging
 test/             Automated tests
 ```
 
@@ -91,7 +102,7 @@ The original version was manually checked in a browser for creation, unlocking, 
 
 ## Not implemented
 
-Multiple vaults, synchronization between devices, browser extensions and autofill, time-based one-time passwords (TOTP), attachments, password history, import/export, and breach detection are outside the current scope.
+Multiple vaults, synchronization between devices, time-based one-time passwords (TOTP), attachments, password history, import/export, and breach detection are outside the current scope. The extension does not automatically capture credentials, submit forms, or fill iframe logins.
 
 Changing the master password requires re-encrypting the entire vault; the interface does not yet provide this operation.
 

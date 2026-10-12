@@ -25,6 +25,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # There are no dependencies to install -- the whole project runs on the
-      # Node standard library, so CI is just the test suite.
+      # Runtime, tests and extension packaging use the Node standard library.
+      - run: npm run check
       - run: npm test
+      - run: npm run pack:extension
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == '22'
+        with:
+          name: keyward-chrome
+          path: dist/keyward-chrome-*.zip
+          if-no-files-found: error
