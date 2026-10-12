@@ -10,7 +10,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_VAULT_PATH, readVaultFile, writeVaultFile } from './storage.js';
+import { DEFAULT_VAULT_PATH, VaultConflictError, assertSealed, readVaultFile, vaultRevision, writeVaultFile } from './storage.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.resolve(here, '..', 'web');
@@ -101,25 +101,41 @@ function originAllowed(request) {
 async function handleApi(request, response, vaultPath) {
   if (request.method === 'GET') {
     const envelope = await readVaultFile(vaultPath);
-    return sendJson(response, 200, { exists: envelope !== null, envelope });
+    const revision = vaultRevision(envelope);
+    return sendJson(response, 200, { exists: envelope !== null, envelope, revision }, revision ? { ETag: `"${revision}"` } : {});
   }
 
   if (request.method === 'PUT') {
     if (!originAllowed(request)) return sendJson(response, 403, { error: 'cross-origin write refused' });
 
+    const match = request.headers['if-match'];
+    const absent = request.headers['if-none-match'];
+    if (match === undefined && absent === undefined) {
+      return sendJson(response, 428, { error: 'Read the vault first and provide If-Match or If-None-Match. Refresh older Keyward pages before saving.' });
+    }
+    if ((match !== undefined && absent !== undefined) ||
+        (absent !== undefined && absent !== '*') ||
+        (match !== undefined && !/^"[a-f0-9]{64}"$/.test(match))) {
+      return sendJson(response, 400, { error: 'invalid vault revision condition' });
+    }
+    const expectedRevision = absent === '*' ? null : match.slice(1, -1);
+
     let envelope;
     try {
       envelope = JSON.parse(await readBody(request));
+      assertSealed(envelope);
     } catch (error) {
       return sendJson(response, 400, { error: `invalid request body: ${error.message}` });
     }
 
     try {
-      await writeVaultFile(envelope, vaultPath);
+      await writeVaultFile(envelope, vaultPath, { expectedRevision });
     } catch (error) {
-      return sendJson(response, 400, { error: error.message });
+      if (error instanceof VaultConflictError) return sendJson(response, 412, { error: error.message });
+      throw error;
     }
-    return sendJson(response, 200, { ok: true, savedAt: new Date().toISOString() });
+    const revision = vaultRevision(envelope);
+    return sendJson(response, 200, { ok: true, revision, savedAt: new Date().toISOString() }, { ETag: `"${revision}"` });
   }
 
   return sendJson(response, 405, { error: 'method not allowed' }, { Allow: 'GET, PUT' });

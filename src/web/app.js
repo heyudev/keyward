@@ -13,7 +13,6 @@ import {
   findReusedPasswords,
   getItem,
   openSession,
-  sealWithSession,
   searchItems,
   sortItems,
   updateItem,
@@ -24,6 +23,7 @@ import {
   generatePassword,
 } from '/core/generator.js';
 import { planUnlock } from '/core/unlock.js';
+import { createPersistence } from '/core/persistence.js';
 
 const IDLE_LOCK_MS = 5 * 60 * 1000;
 const CLIPBOARD_CLEAR_MS = 20 * 1000;
@@ -74,6 +74,8 @@ const ICONS = {
 
 const state = {
   session: null,       // { key, salt, iterations } -- present only while unlocked
+  persistence: null,
+  saving: false,
   vault: null,         // decrypted vault -- present only while unlocked
   selectedId: null,
   editing: null,       // { id: string|null, draft } while the editor is open
@@ -175,30 +177,56 @@ async function loadEnvelope() {
   return response.json();
 }
 
-function setSaveState(text, kind = '') {
+function setSaveState(text, kind = '', detail = '') {
   const node = $('save-state');
   node.textContent = text;
   node.dataset.state = kind;
+  $('save-error').textContent = detail;
+  $('save-error').hidden = !detail;
 }
 
-async function persist() {
+async function saveEnvelope(envelope, revision) {
+  const response = await fetch('/api/vault', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(revision === null ? { 'If-None-Match': '*' } : { 'If-Match': `"${revision}"` }),
+    },
+    body: JSON.stringify(envelope),
+  });
+  if (!response.ok) {
+    const { error } = await response.json().catch(() => ({}));
+    throw new Error(error ?? `HTTP ${response.status}`);
+  }
+  return (await response.json()).revision;
+}
+
+function setSaving(saving) {
+  state.saving = saving;
+  for (const node of $('app').querySelectorAll('button, .editor input, .editor textarea')) {
+    if (node.id !== 'lock-button') node.disabled = saving;
+  }
+}
+
+async function persist(mutate) {
+  if (state.saving || !state.persistence) return false;
+  const persistence = state.persistence;
+  setSaving(true);
   setSaveState('Saving…');
   try {
-    const envelope = await sealWithSession(state.session, state.vault);
-    const response = await fetch('/api/vault', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope),
-    });
-    if (!response.ok) {
-      const { error } = await response.json().catch(() => ({}));
-      throw new Error(error ?? `HTTP ${response.status}`);
-    }
+    const vault = await persistence.save(mutate);
+    if (state.persistence !== persistence) return false;
+    state.vault = vault;
     setSaveState('Saved');
-    setTimeout(() => { if ($('save-state').textContent === 'Saved') setSaveState(''); }, 2000);
+    return true;
   } catch (error) {
-    setSaveState(`Not saved: ${error.message}`, 'error');
-    showToast('Could not save the vault');
+    if (state.persistence === persistence) {
+      setSaveState('Not saved', 'error', error.message);
+      showToast('Could not save the vault. See the error above.');
+    }
+    return false;
+  } finally {
+    if (state.persistence === persistence) setSaving(false);
   }
 }
 
@@ -217,13 +245,25 @@ function setLockScreenMode(creating) {
 }
 
 function lock() {
+  state.persistence?.close();
+  state.persistence = null;
   state.session = null;
   state.vault = null;
   state.selectedId = null;
   state.editing = null;
   state.query = '';
   state.revealed.clear();
+  state.generator.value = '';
   clearTimeout(idleTimer);
+
+  // Hidden nodes still hold plaintext and event-handler closures. Remove them.
+  $('detail').replaceChildren();
+  $('item-list').replaceChildren();
+  $('item-count').textContent = '';
+  $('generator-overlay').hidden = true;
+  $('generated').textContent = '';
+  paintStrength($('generated-strength-bar'), $('generated-strength-label'), '');
+  setSaving(false);
 
   $('app').hidden = true;
   $('lock-screen').hidden = false;
@@ -250,6 +290,8 @@ async function unlock(event) {
   event.preventDefault();
 
   const button = $('unlock-button');
+  if (button.disabled) return;
+  button.disabled = true;
   const error = $('lock-error');
   const password = $('master-password').value;
 
@@ -266,6 +308,7 @@ async function unlock(event) {
   try {
     stored = await loadEnvelope();
   } catch (problem) {
+    button.disabled = false;
     return fail(`Cannot reach the keyward server: ${problem.message}`);
   }
 
@@ -277,29 +320,45 @@ async function unlock(event) {
   });
 
   if (plan.action === 'switch-to-create') {
+    button.disabled = false;
     setLockScreenMode(true);
     return fail(plan.message);
   }
-  if (plan.action === 'reject') return fail(plan.message);
+  if (plan.action === 'reject') {
+    button.disabled = false;
+    return fail(plan.message);
+  }
   if (plan.repairForm) setLockScreenMode(false);
 
   const creating = plan.action === 'create';
 
   // Key derivation is deliberately slow; tell the user why the UI paused.
-  button.disabled = true;
   button.textContent = creating ? 'Creating vault…' : 'Unlocking…';
   await new Promise((resolve) => setTimeout(resolve, 16));
 
   try {
+    let session;
+    let vault;
     if (creating) {
-      state.session = await createSession(password);
-      state.vault = createVault();
-      await persist();
+      session = await createSession(password);
+      vault = createVault();
     } else {
       const opened = await openSession(stored.envelope, password);
-      state.session = opened.session;
-      state.vault = opened.vault;
+      session = opened.session;
+      vault = opened.vault;
     }
+    const persistence = createPersistence({ session, vault, revision: stored.revision, saveEnvelope });
+    if (creating) {
+      try {
+        await persistence.save((current) => current);
+      } catch (problem) {
+        persistence.close();
+        throw problem;
+      }
+    }
+    state.session = session;
+    state.vault = vault;
+    state.persistence = persistence;
   } catch (problem) {
     button.disabled = false;
     button.textContent = creating ? 'Create vault' : 'Unlock';
@@ -466,10 +525,7 @@ function renderDetail() {
           type: 'button',
           title: item.favorite ? 'Remove from favourites' : 'Add to favourites',
           onClick: async () => {
-            const result = updateItem(state.vault, item.id, { favorite: !item.favorite });
-            state.vault = result.vault;
-            render();
-            await persist();
+            if (await persist((vault) => updateItem(vault, item.id, { favorite: !item.favorite }).vault)) render();
           },
         }, item.favorite ? '★' : '☆'),
         el('button', {
@@ -567,11 +623,10 @@ function renderEditor() {
       class: 'button button-danger', type: 'button',
       onClick: async () => {
         if (!confirm(`Delete "${draft.title}"? This cannot be undone.`)) return;
-        state.vault = deleteItem(state.vault, id);
+        if (!(await persist((vault) => deleteItem(vault, id)))) return;
         state.editing = null;
         state.selectedId = null;
         render();
-        await persist();
         showToast('Item deleted');
       },
     }, 'Delete'),
@@ -579,13 +634,14 @@ function renderEditor() {
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (state.saving) return;
     try {
+      // Validate before starting the async save so errors stay with the form.
       const result = isNew ? addItem(state.vault, draft) : updateItem(state.vault, id, draft);
-      state.vault = result.vault;
+      if (!(await persist(() => result.vault))) return;
       state.selectedId = result.item.id;
       state.editing = null;
       render();
-      await persist();
     } catch (problem) {
       error.textContent = problem.message;
       error.hidden = false;
@@ -643,7 +699,11 @@ function bindEvents() {
   $('regenerate').addEventListener('click', regenerate);
   $('copy-generated').addEventListener('click', () => copyValue('Password', state.generator.value));
 
-  $('search').addEventListener('input', (event) => { state.query = event.target.value; renderList(); });
+  $('search').addEventListener('input', (event) => {
+    state.query = event.target.value;
+    renderList();
+    setSaving(state.saving);
+  });
 
   $('new-item-button').addEventListener('click', () => {
     state.editing = { id: null, draft: { type: 'login', title: '', username: '', password: '', url: '', notes: '', tags: [] } };

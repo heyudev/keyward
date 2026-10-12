@@ -1,92 +1,100 @@
 # Keyward
 
+[简体中文](README.zh-CN.md) | **English**
+
 [![tests](https://github.com/heyudev/keyward/actions/workflows/test.yml/badge.svg)](https://github.com/heyudev/keyward/actions/workflows/test.yml)
 
-一个本地运行的密码管理器，核心功能对标 1Password：一个用主密码加密的保险库，存登录信息，带密码生成器。
+A locally hosted password manager with an encrypted vault, login records, and a password generator.
 
-数据只存在你自己的机器上，没有账号、没有同步、没有云端。主密码不会离开浏览器，也不会被存到任何地方——包括它自己的服务端。
+Your data stays on your machine. There are no accounts, synchronization, or cloud storage. Your master password stays in the browser and is never persisted or sent to the server.
 
-名字取自锁具术语 ward：锁芯里那圈阻挡错误钥匙进入的凸起。
+The name comes from *ward*: an obstruction inside a lock that prevents an incorrect key from turning.
 
-## 快速开始
+## Quick start
 
-需要 Node.js 20 或更高版本，不需要安装任何依赖。
+Requires Node.js 20 or later. There are no dependencies to install.
+
+From your local checkout:
 
 ```bash
 cd keyward && npm start
 ```
 
-然后打开 http://127.0.0.1:8787。首次打开会让你设置主密码，之后每次打开输入它解锁。
+Open http://127.0.0.1:8787. On your first visit, choose a master password to create the vault. On subsequent visits, enter it to unlock.
 
-跑测试：
+Run the tests:
 
 ```bash
 cd keyward && npm test
 ```
 
-## 能做什么
+## Features
 
-- **保险库**：一个主密码解锁全部内容；手动锁定（Ctrl/Cmd+L），或闲置 5 分钟自动锁定。
-- **条目**：登录信息（标题、用户名、密码、网址、备注、标签）和安全备注，可增删改查、加星收藏。
-- **搜索**：按标题、用户名、网址、备注、标签过滤，多个关键词是「与」的关系。密码本身不参与搜索——否则在搜索框里试密码就能确认猜测。
-- **密码生成器**：随机密码（长度、字符类、排除易混字符）和助记词密码（如 `Hood-Cook-Hour48-Lamp`），带强度估算。
-- **重复密码提醒**：多个条目用了同一个密码时，列表和详情页会标出来。
-- **复制**：一键复制用户名或密码，20 秒后自动清空剪贴板。
+- **Vault:** one master password unlocks everything. Lock manually with Ctrl/Cmd+L, or let the vault lock automatically after five minutes of inactivity.
+- **Items:** create, view, edit, and delete logins and secure notes. Logins include a title, username, password, website, notes, and tags. Mark items as favorites.
+- **Search:** filter by title, username, website, notes, and tags. Every search term must match. Passwords are excluded from search so a query cannot confirm a password guess.
+- **Password generator:** generate random passwords with configurable length, character classes, and exclusion of ambiguous characters, or word-based passphrases such as `Hood-Cook-Hour48-Lamp`. Includes a strength estimate.
+- **Password reuse warnings:** the list and detail view flag passwords shared by multiple items.
+- **Clipboard:** copy a username or password with one click. Keyward attempts to clear the clipboard after 20 seconds.
+- **Save protection:** item changes are committed only after a successful save. A failed save leaves the editing form available for retry. Stale tabs cannot overwrite changes saved by another tab.
 
-## 安全模型
+## Security model
 
-**加密发生在浏览器里，服务端只是个存密文的抽屉。**
+**Encryption happens in the browser. The server stores only encrypted envelopes.**
 
-解锁时，主密码经 PBKDF2-SHA256（600,000 次迭代，OWASP 2023 推荐值）派生出一个 256 位密钥，用来做 AES-256-GCM 加解密。这个密钥是不可导出的（non-extractable），主密码用完即弃——所以「锁定」就是把密钥和明文从内存里丢掉。
+The master password is used with PBKDF2-SHA256 and 600,000 iterations to derive a 256-bit key for AES-256-GCM encryption. The key is non-extractable. The master password fields are cleared after a successful unlock. Locking clears session state and plaintext from the interface, and prevents unfinished asynchronous saves from displaying content again.
 
-服务端从头到尾只经手一个加密信封，它没有任何解密手段。为防止客户端出 bug 把明文发上来，服务端会拒绝任何看起来不像密文的请求体。
+The server handles an encrypted envelope and has no decryption key. It rejects request bodies that do not have the expected envelope structure, including envelopes with a top-level plaintext `items` field. This validation is a guard against client bugs, not proof that arbitrary submitted data is encrypted.
 
-其他几处：
+Additional protections:
 
-- 信封头部（版本、KDF 参数、盐）作为附加认证数据参与 GCM 校验，所以有人把迭代次数改小、想让你的库更容易被暴破，解密会直接失败，而不是默默照做。
-- 每次保存都用新的初始化向量，同样的内容不会产生同样的密文。
-- 服务端只监听回环地址，写操作校验 Origin，别的网页没法借你的浏览器改你的库。
-- 页面的 CSP 禁止内联脚本和一切外部连接，注入的标记既跑不起来也传不出去。所有 DOM 都用 `textContent` 构建，不做 HTML 字符串拼接。
+- The envelope header, including its version, KDF parameters, and salt, is authenticated as AES-GCM additional authenticated data. Tampering with those parameters causes decryption to fail.
+- Each save uses a fresh initialization vector, so encrypting the same content again produces different ciphertext.
+- The server binds to the loopback address by default. Writes check the host and port in the Origin header.
+- The Content Security Policy (CSP) disallows inline scripts and external connections. DOM text is constructed with `textContent`, without concatenating HTML strings.
 
-**没有找回机制。** 主密码丢了，保险库就打不开了——这是端到端加密的代价，不是缺陷。
+**There is no password recovery.** If you lose your master password, the vault cannot be unlocked.
 
-## 数据存在哪
+## Storage and backups
 
-默认在 `~/.keyward/vault.json`，权限 `0600`。用 `KEYWARD_VAULT` 环境变量可以改路径，`PORT` 可以改端口。
+The default vault path is `~/.keyward/vault.json`, with file permissions `0600`. Set `KEYWARD_VAULT` to change the path, or `PORT` to change the listening port.
 
-写入是原子的：先写临时文件再改名，中途崩溃只会留下旧库或新库，不会留下半个文件。每次保存前，上一版会留一份 `vault.json.bak`。
+Writes are atomic: Keyward writes to a separate temporary file before renaming it into place, so a partial file is never published as the vault. Before each save, the previous version is kept as `vault.json.bak`. Both the vault and its backup have permissions `0600`. Writes to the same path run sequentially within the server process. Only one server process should manage a given vault file.
 
-备份就是拷走这个文件——它本身是密文，放哪都行。
+If another tab has changed the vault, copy your unsaved edits before locking and unlocking to load the latest version, then apply your edits again. Keyward does not automatically merge or overwrite conflicting changes. After upgrading the server, refresh older open pages before saving, and preserve any unsaved edits first.
 
-## 代码结构
+To back up the vault, copy the encrypted file to your backup location.
 
+## Code layout
+
+```text
+src/core/         Shared encryption and data logic for the browser and Node
+  crypto.js       Key derivation and AES-GCM encryption/decryption
+  vault.js        Vault model, item operations, search, and encrypted envelopes
+  generator.js    Password/passphrase generation and strength estimation
+  unlock.js       Pure decision logic for creating or unlocking a vault
+  persistence.js  Save confirmation, mutation ordering, and locking during saves
+src/server/       Local HTTP server: static assets and encrypted vault storage
+src/web/          Browser interface
+test/             Automated tests
 ```
-src/core/      加密与数据逻辑，浏览器和 Node 共用同一份代码
-  crypto.js      密钥派生、AES-GCM 加解密
-  vault.js       保险库模型、条目增删改查、搜索、加密信封
-  generator.js   密码 / 助记词生成、强度估算
-  unlock.js      解锁还是新建的判定（纯函数，见下）
-src/server/    本地 HTTP 服务：静态文件 + 一个存密文的接口
-src/web/       前端界面
-test/          单元测试
-```
 
-`src/core` 里的代码不碰 DOM 也不碰文件系统，浏览器直接 `import`，Node 直接跑测试，两边共用同一份实现——加密逻辑没有第二个版本可以写错。
+The code in `src/core` does not access the DOM or filesystem. The browser imports it directly, and Node tests the same implementation.
 
-`unlock.js` 单独存在是有原因的：判断「该新建保险库还是该解锁」如果搞错，会用空库覆盖真实数据。这个判断被抽成纯函数，规则是**以磁盘上有没有库为准，不信任界面状态**，并有回归测试守着。
+The decision to create or unlock a vault lives in `unlock.js` because an incorrect decision could overwrite existing data with an empty vault. The rule is **use the vault on disk as the source of truth, rather than the form's current mode**, with regression tests covering that behavior.
 
-## 测试与人工验证
+## Testing and manual verification
 
-63 个单元测试覆盖加解密、篡改与降级检测、条目增删改查、搜索、生成器分布均匀性、存储原子性、接口鉴权与路径穿越防护。CI 在 Node 20 / 22 / 24 上跑同一套测试。
+Automated tests cover encryption/decryption, tampering and downgrade detection, item operations, search, generator distribution, atomic storage, request checks, and path traversal protection. They also cover concurrent creation, stale-tab protection, retry after a failed save, backup permissions, and asynchronous saves during locking. The CI workflow is configured to run the same suite on Node 20, 22, and 24.
 
-浏览器交互部分（创建、解锁、锁定往返、增删改查、搜索、生成器、剪贴板、深浅色主题）已在浏览器中实际走通。自动锁定的 5 分钟计时和删除条目的确认弹窗未做人工验证。
+The original version was manually checked in a browser for creation, unlocking, locking and unlocking again, item operations, search, the generator, and clipboard copying. Browser interactions have not yet been rechecked after the save-protection changes. The five-minute automatic lock and delete confirmation dialog also still need manual verification. Scope, compatibility, and rollback details are recorded in the [vault save review (Chinese)](docs/save-safety.md).
 
-## 没做的事
+## Not implemented
 
-刻意留在核心之外：多保险库、设备间同步、浏览器扩展与自动填充、TOTP 双因素、附件、密码历史、导入导出、泄露检测。
+Multiple vaults, synchronization between devices, browser extensions and autofill, time-based one-time passwords (TOTP), attachments, password history, import/export, and breach detection are outside the current scope.
 
-主密码目前只能通过重新加密整个库来更换，界面上还没有入口。
+Changing the master password requires re-encrypting the entire vault; the interface does not yet provide this operation.
 
-## 许可
+## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT. See [LICENSE](LICENSE).

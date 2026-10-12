@@ -285,6 +285,14 @@ textarea.input { resize: vertical; min-height: 84px; font-family: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .save-state[data-state="error"] { color: var(--danger); }
+.save-error {
+  margin: 0;
+  padding: 10px 18px;
+  flex: none;
+  color: var(--danger);
+  background: var(--danger-soft);
+  overflow-wrap: anywhere;
+}
 
 /* ================================= Layout ================================= */
 .layout { display: flex; flex: 1; min-height: 0; }

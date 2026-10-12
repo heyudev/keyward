@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server/server.js';
-import { assertSealed, readVaultFile, writeVaultFile } from '../src/server/storage.js';
+import { VaultConflictError, assertSealed, readVaultFile, vaultExists, vaultRevision, writeVaultFile } from '../src/server/storage.js';
 import { createVault, sealVault } from '../src/core/vault.js';
 
 const FAST = { iterations: 1000 };
@@ -32,7 +32,7 @@ const sealed = () => sealVault(createVault(), 'master', FAST);
 const put = (call, body, headers = {}) =>
   call('/api/vault', {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', 'If-None-Match': '*', ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 
@@ -80,7 +80,7 @@ test('GET /api/vault reports an absent vault', async () => {
   await withServer(async ({ call }) => {
     const response = await call('/api/vault');
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { exists: false, envelope: null });
+    assert.deepEqual(await response.json(), { exists: false, envelope: null, revision: null });
   });
 });
 
@@ -145,7 +145,7 @@ test('the client and its core modules are served', async () => {
     assert.match(page.headers.get('content-type'), /text\/html/);
     assert.match(await page.text(), /<title>Keyward<\/title>/);
 
-    for (const asset of ['/app.js', '/styles.css', '/core/vault.js', '/core/crypto.js', '/core/generator.js']) {
+    for (const asset of ['/app.js', '/styles.css', '/core/vault.js', '/core/crypto.js', '/core/generator.js', '/core/persistence.js']) {
       assert.equal((await call(asset)).status, 200, `${asset} should be served`);
     }
   });
@@ -175,4 +175,134 @@ test('unknown paths 404', async () => {
   await withServer(async ({ call }) => {
     assert.equal((await call('/nope.js')).status, 404);
   });
+});
+
+test('simultaneous writes preserve submission order and the last backup', async () => {
+  const vaultPath = await tempVaultPath();
+  const envelopes = await Promise.all(Array.from({ length: 12 }, sealed));
+  await Promise.all(envelopes.map((envelope) => writeVaultFile(envelope, vaultPath)));
+  assert.deepEqual(await readVaultFile(vaultPath), envelopes.at(-1));
+  assert.deepEqual(await readVaultFile(`${vaultPath}.bak`), envelopes.at(-2));
+  assert.deepEqual((await readdir(path.dirname(vaultPath))).sort(), ['vault.json', 'vault.json.bak']);
+});
+
+test('vault and replacement backup are private even when existing files are public', async () => {
+  const vaultPath = await tempVaultPath();
+  await writeVaultFile(await sealed(), vaultPath);
+  await writeVaultFile(await sealed(), vaultPath);
+  await chmod(vaultPath, 0o644);
+  await chmod(`${vaultPath}.bak`, 0o644);
+  await writeVaultFile(await sealed(), vaultPath);
+  for (const file of [vaultPath, `${vaultPath}.bak`]) {
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  }
+});
+
+test('corrupt or plaintext files cannot be treated as an absent vault or overwritten', async () => {
+  const vaultPath = await tempVaultPath();
+  for (const contents of ['null', '{}', '{ not json']) {
+    await writeFile(vaultPath, contents);
+    await assert.rejects(readVaultFile(vaultPath));
+    await assert.rejects(writeVaultFile(await sealed(), vaultPath, { expectedRevision: null }));
+    assert.equal(await readFile(vaultPath, 'utf8'), contents);
+  }
+});
+
+test('conditional storage compares within the write queue and retries identical ciphertext', async () => {
+  const vaultPath = await tempVaultPath();
+  const first = await sealed();
+  const second = await sealed();
+  const outcomes = await Promise.allSettled([
+    writeVaultFile(first, vaultPath, { expectedRevision: null }),
+    writeVaultFile(second, vaultPath, { expectedRevision: null }),
+  ]);
+  assert.equal(outcomes[0].status, 'fulfilled');
+  assert.ok(outcomes[1].reason instanceof VaultConflictError);
+  await writeVaultFile(first, vaultPath, { expectedRevision: null });
+  await writeVaultFile(second, vaultPath, { expectedRevision: vaultRevision(first) });
+  await writeVaultFile(second, vaultPath, { expectedRevision: vaultRevision(first) });
+  assert.deepEqual(await readVaultFile(`${vaultPath}.bak`), first);
+});
+
+test('the API requires a revision and validates conditional headers', async () => {
+  await withServer(async ({ call, vaultPath }) => {
+    const response = await call('/api/vault', { method: 'PUT', body: JSON.stringify(await sealed()) });
+    assert.equal(response.status, 428);
+    assert.equal((await call('/api/vault', {
+      method: 'PUT', headers: { 'If-Match': 'invalid' }, body: JSON.stringify(await sealed()),
+    })).status, 400);
+    for (const headers of [
+      { 'If-Match': 'invalid' },
+      { 'If-None-Match': 'invalid' },
+      { 'If-Match': `"${'0'.repeat(64)}"`, 'If-None-Match': '*' },
+    ]) {
+      assert.equal((await put(call, await sealed(), headers)).status, 400);
+    }
+    assert.equal(await readVaultFile(vaultPath), null);
+  });
+});
+
+test('two tabs creating simultaneously cannot replace each other', async () => {
+  await withServer(async ({ call, vaultPath }) => {
+    const envelopes = await Promise.all([sealed(), sealed()]);
+    const responses = await Promise.all(envelopes.map((envelope) => put(call, envelope)));
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 412]);
+    assert.deepEqual(await readVaultFile(vaultPath), envelopes[responses.findIndex((response) => response.status === 200)]);
+    assert.deepEqual(await readdir(path.dirname(vaultPath)), ['vault.json']);
+  });
+});
+
+test('a stale tab cannot overwrite the latest vault or its backup', async () => {
+  await withServer(async ({ call, vaultPath }) => {
+    const first = await sealed();
+    assert.equal((await put(call, first)).status, 200);
+    const read = await call('/api/vault');
+    const etag = read.headers.get('etag');
+    assert.equal(etag, `"${(await read.json()).revision}"`);
+    const second = await sealed();
+    const update = (envelope) => call('/api/vault', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'If-Match': etag }, body: JSON.stringify(envelope),
+    });
+    const saved = await update(second);
+    assert.equal(saved.status, 200);
+    assert.equal(saved.headers.get('etag'), `"${(await saved.json()).revision}"`);
+    assert.equal((await update(await sealed())).status, 412);
+    assert.equal((await update(second)).status, 200, 'identical ciphertext retry succeeds');
+    assert.deepEqual(await readVaultFile(vaultPath), second);
+    assert.deepEqual(await readVaultFile(`${vaultPath}.bak`), first);
+  });
+});
+
+test('filesystem errors are server errors and cannot become a new empty vault', async () => {
+  await withServer(async ({ call, vaultPath }) => {
+    await writeFile(vaultPath, 'null');
+    assert.equal((await call('/api/vault')).status, 500);
+    assert.equal((await put(call, await sealed())).status, 500);
+    assert.equal(await readFile(vaultPath, 'utf8'), 'null');
+  });
+});
+
+test('a backup write failure preserves the vault, cleans temporary files and permits retry', async () => {
+  await withServer(async ({ call, vaultPath }) => {
+    const first = await sealed();
+    await put(call, first);
+    await mkdir(`${vaultPath}.bak`);
+    const second = await sealed();
+    const update = () => call('/api/vault', {
+      method: 'PUT', headers: { 'If-Match': `"${vaultRevision(first)}"` }, body: JSON.stringify(second),
+    });
+    assert.equal((await update()).status, 500);
+    assert.deepEqual(await readVaultFile(vaultPath), first);
+    assert.deepEqual((await readdir(path.dirname(vaultPath))).sort(), ['vault.json', 'vault.json.bak']);
+    await rm(`${vaultPath}.bak`, { recursive: true });
+    assert.equal((await update()).status, 200);
+    assert.deepEqual(await readVaultFile(vaultPath), second);
+    assert.deepEqual(await readVaultFile(`${vaultPath}.bak`), first);
+  });
+});
+
+test('existence checks do not hide filesystem errors other than ENOENT', async () => {
+  const vaultPath = await tempVaultPath();
+  await writeFile(vaultPath, 'not a directory');
+  await assert.rejects(vaultExists(path.join(vaultPath, 'child')), { code: 'ENOTDIR' });
 });

@@ -5,7 +5,8 @@
  * opaque blob and has no way to decrypt it. Everything here is about not
  * losing that blob.
  */
-import { readFile, rename, writeFile, mkdir, copyFile, access } from 'node:fs/promises';
+import { readFile, rename, writeFile, mkdir, mkdtemp, rm, access } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { ENVELOPE_FORMAT, VAULT_VERSION } from '../core/vault.js';
@@ -33,14 +34,17 @@ export async function vaultExists(vaultPath = DEFAULT_VAULT_PATH) {
   try {
     await access(vaultPath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
   }
 }
 
 export async function readVaultFile(vaultPath = DEFAULT_VAULT_PATH) {
   try {
-    return JSON.parse(await readFile(vaultPath, 'utf8'));
+    const envelope = JSON.parse(await readFile(vaultPath, 'utf8'));
+    assertSealed(envelope);
+    return envelope;
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     if (error instanceof SyntaxError) throw new Error(`vault file at ${vaultPath} is not valid JSON`);
@@ -48,23 +52,60 @@ export async function readVaultFile(vaultPath = DEFAULT_VAULT_PATH) {
   }
 }
 
-/**
- * Write atomically: a crash mid-save must leave either the old vault or the
- * new one, never a truncated file. The previous version is kept as .bak.
- */
-export async function writeVaultFile(envelope, vaultPath = DEFAULT_VAULT_PATH) {
-  assertSealed(envelope);
+/** A content revision is independent of disk whitespace, not an authentication token. */
+export function vaultRevision(envelope) {
+  return envelope === null ? null : createHash('sha256').update(JSON.stringify(envelope)).digest('hex');
+}
 
-  const directory = path.dirname(vaultPath);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-
-  if (await vaultExists(vaultPath)) {
-    await copyFile(vaultPath, `${vaultPath}.bak`);
+export class VaultConflictError extends Error {
+  constructor() {
+    super('The vault changed in another tab. Copy your unsaved edits before locking and unlocking to load the latest vault.');
+    this.name = 'VaultConflictError';
   }
+}
 
-  const temporary = `${vaultPath}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, vaultPath);
+// One process owns the vault. Compare and publish under the same queue, including
+// when separate server instances in that process use the same resolved path.
+const writes = new Map();
 
-  return vaultPath;
+/** Publish atomically, keeping the previous encrypted envelope as a private backup. */
+export async function writeVaultFile(envelope, vaultPath = DEFAULT_VAULT_PATH, { expectedRevision } = {}) {
+  assertSealed(envelope);
+  vaultPath = path.resolve(vaultPath);
+  // Snapshot the caller's envelope before waiting behind an earlier write.
+  const contents = `${JSON.stringify(envelope, null, 2)}\n`;
+  const revision = vaultRevision(envelope);
+  const previous = writes.get(vaultPath) ?? Promise.resolve();
+  // The previous caller still receives its rejection; only unblock the queue.
+  const operation = previous.catch(() => {}).then(async () => {
+    const current = await readVaultFile(vaultPath);
+    const currentRevision = vaultRevision(current);
+    // A lost response can be retried with the identical encrypted envelope.
+    if (expectedRevision !== undefined && currentRevision === revision) return vaultPath;
+    if (expectedRevision !== undefined && currentRevision !== expectedRevision) throw new VaultConflictError();
+
+    const directory = path.dirname(vaultPath);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const temporary = await mkdtemp(path.join(directory, '.keyward-'));
+    try {
+      const next = path.join(temporary, 'vault');
+      await writeFile(next, contents, { mode: 0o600, flag: 'wx' });
+      if (current !== null) {
+        const backup = path.join(temporary, 'backup');
+        await writeFile(backup, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+        await rename(backup, `${vaultPath}.bak`);
+      }
+      await rename(next, vaultPath);
+      return vaultPath;
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+  writes.set(vaultPath, operation);
+
+  try {
+    return await operation;
+  } finally {
+    if (writes.get(vaultPath) === operation) writes.delete(vaultPath);
+  }
 }
